@@ -13,7 +13,10 @@ monitor/fastblock-client
 monitor/fastblock-fakeosd
 fastblock.json
 .vstart/
+.localdeps/
+.cache/
 core.*
+src/test/file/
 
 # Compiled object files and libraries
 *.o

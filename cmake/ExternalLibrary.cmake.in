@@ -13,6 +13,9 @@ project(build-deps LANGUAGES CXX)
 cmake_host_system_information(
   RESULT build_concurrency_factor
   QUERY NUMBER_OF_LOGICAL_CORES)
+if (build_concurrency_factor GREATER 6)
+  set(build_concurrency_factor 6)
+endif()
 set(info_dir --infodir=@FASTBLOCK_DEPS_INSTALL_DIR@/share/info)
 include(ExternalProject)
 
