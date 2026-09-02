@@ -29,37 +29,47 @@ else ()
   set(FASTBLOCK_DEPS_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/deps_install CACHE STRING "Managed dependencies install directory")
 endif()
 
+set(FASTBLOCK_EXTERNAL_ROOT "/media/yangjilei/Elements/YangJiLei" CACHE PATH "External disk root for large FastBlock build artifacts")
+set(FASTBLOCK_RDMA_CORE_INSTALL_DIR "${FASTBLOCK_EXTERNAL_ROOT}/rdma-core-install" CACHE PATH "RDMA core install prefix")
+set(FASTBLOCK_LIBAIO_ROOT "${FASTBLOCK_EXTERNAL_ROOT}/fastblock-localpkgs/libaio/extract/usr" CACHE PATH "Local libaio root")
+
 if (FASTBLOCK_COLLECT_DURATION)
     add_compile_definitions(FASTBLOCK_COLLECT_DURATION)
 endif()
 
 message("deps will install to ${FASTBLOCK_DEPS_INSTALL_DIR}")
 
+include_directories(SYSTEM
+  /home/yangjilei/vcpkg/installed/x64-linux/include
+  ${FASTBLOCK_RDMA_CORE_INSTALL_DIR}/include
+)
+
 list(APPEND BASE_LD_FLAGS_LIST
   -L${FASTBLOCK_DEPS_INSTALL_DIR}/lib
   -L${FASTBLOCK_DEPS_INSTALL_DIR}/lib64
+  -L${FASTBLOCK_RDMA_CORE_INSTALL_DIR}/lib
+  -L${FASTBLOCK_LIBAIO_ROOT}/lib/x86_64-linux-gnu
   )
+list(APPEND CMAKE_PREFIX_PATH ${FASTBLOCK_RDMA_CORE_INSTALL_DIR})
 set(PKG_CONFIG_PATH_LIST
   ${FASTBLOCK_DEPS_INSTALL_DIR}/lib64/pkgconfig
   ${FASTBLOCK_DEPS_INSTALL_DIR}/share/pkgconfig
   ${FASTBLOCK_DEPS_INSTALL_DIR}/lib/pkgconfig
+  ${FASTBLOCK_RDMA_CORE_INSTALL_DIR}/lib/pkgconfig
   )
 
 list(APPEND BASE_CXX_FLAGS_LIST -fPIC)
 list(APPEND BASE_C_FLAGS_LIST -fPIC)
 
 if ("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
-  set(COMMON_LINKOPTS "-lasan -lubsan")
+  set(COMMON_LINKOPTS "-lasan")
   add_compile_definitions(DEBUG)
 
   list(APPEND BASE_CXX_FLAGS_LIST
-    -fsanitize=undefined
     -fsanitize=address)
   list(APPEND BASE_C_FLAGS_LIST
-    -fsanitize=undefined
     -fsanitize=address)
   list(APPEND BASE_LD_FLAGS_LIST
-    -fsanitize=undefined
     -fsanitize=address)
 else()
   set(COMMON_LINKOPTS)
@@ -73,12 +83,10 @@ string(JOIN " " BASE_LD_FLAGS ${BASE_LD_FLAGS_LIST})
 string(JOIN ":" PKG_CONFIG_PATH ${PKG_CONFIG_PATH_LIST})
 
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(PROTOBUF REQUIRED IMPORTED_TARGET protobuf)
-
+find_package(Protobuf CONFIG REQUIRED)
 if(NOT TARGET protobuf)
   add_library(protobuf INTERFACE IMPORTED)
-  target_link_libraries(protobuf INTERFACE PkgConfig::PROTOBUF)
+  target_link_libraries(protobuf INTERFACE protobuf::libprotobuf)
 endif()
 
 set(ENV{PKG_CONFIG_PATH}  "${PKG_CONFIG_PATH}")

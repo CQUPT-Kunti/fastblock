@@ -13,8 +13,8 @@ project(build-deps LANGUAGES CXX)
 cmake_host_system_information(
   RESULT build_concurrency_factor
   QUERY NUMBER_OF_LOGICAL_CORES)
-if (build_concurrency_factor GREATER 6)
-  set(build_concurrency_factor 6)
+if (build_concurrency_factor GREATER 4)
+  set(build_concurrency_factor 4)
 endif()
 set(info_dir --infodir=@FASTBLOCK_DEPS_INSTALL_DIR@/share/info)
 include(ExternalProject)
@@ -91,7 +91,14 @@ ExternalProject_Add(spdk
   UPDATE_COMMAND ""
   BUILD_IN_SOURCE ON
   INSTALL_DIR    @FASTBLOCK_DEPS_INSTALL_DIR@
+  PATCH_COMMAND @PROJECT_SOURCE_DIR@/scripts/patch-spdk-build.sh <SOURCE_DIR>
   CONFIGURE_COMMAND
+    ${CMAKE_COMMAND} -E env
+      PKG_CONFIG_PATH=@PKG_CONFIG_PATH@
+      CPPFLAGS=-I@FASTBLOCK_RDMA_CORE_INSTALL_DIR@/include
+      "CFLAGS=-I@FASTBLOCK_RDMA_CORE_INSTALL_DIR@/include -I@FASTBLOCK_LIBAIO_ROOT@/include"
+      "CXXFLAGS=-I@FASTBLOCK_RDMA_CORE_INSTALL_DIR@/include -I@FASTBLOCK_LIBAIO_ROOT@/include"
+      "LDFLAGS=-L@FASTBLOCK_RDMA_CORE_INSTALL_DIR@/lib -L@FASTBLOCK_LIBAIO_ROOT@/lib/x86_64-linux-gnu"
     <SOURCE_DIR>/configure
       --without-nvme-cuse
       --without-crypto
