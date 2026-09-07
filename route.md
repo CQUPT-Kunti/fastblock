@@ -265,7 +265,7 @@ send_request()                                       [fb_client.h#L709](src/incl
 
 覆盖（暂不展开）：`do_send_request` / `handle_send_request()`、`enqueue_leader_request()`、`get_pg_first_available_osd_info()`、`process_leader_request()`、`on_leader_acquired()`、`_leader_osd` 缓存、`leader_osd_info`、`get_stub()` 与连接建立。
 
-**入口**：[send_request()](src/include/fastblock/client/fb_client.h#L709) → `do_send_request` → `handle_send_request()`（[fb_client.h#L869](src/include/fastblock/client/fb_client.h#L869)）。
+**入口**：[send_request()](src/include/fastblock/client/fb_client.h#L709) → `do_send_request` → `handle_send_request()`（[fb_client.h#L869](src/include/fastblock/client/fb_client.h#L869)）。**完整文档：[route2.md](route2.md)**。
 
 ### 第三阶段：请求队列和 poller
 
