@@ -246,4 +246,4 @@ stub->process_write(...)           fb_client.h:1160   ★ 本阶段终点
 - [ ] 请求什么时候进入 `_on_flight_requests`？（`stub->process_write(...)` 之后，[L1191-1192](src/include/fastblock/client/fb_client.h#L1191)）
 - [ ] `stub->process_write()` 为什么是这一阶段的结束点？（从这里开始进入 RPC 传输层，属于第四阶段）
 
-下一阶段入口：`connection::CallMethod()`（[msg/rdma/client.h#L510](src/include/fastblock/msg/rdma/client.h#L510)）——protobuf 序列化 + RDMA 发送，以及 `process_response()` 处理响应。
+下一阶段入口：`connection::CallMethod()`（[msg/rdma/client.h#L510](src/include/fastblock/msg/rdma/client.h#L510)）——protobuf 序列化 + RDMA 发送，以及 `process_response()` 处理响应。**完整文档：[route4.md](route4.md)**。

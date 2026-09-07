@@ -277,10 +277,10 @@ send_request()                                       [fb_client.h#L709](src/incl
 
 **目标**：搞懂 `stub->process_write()` 到底怎么把请求发出去。
 
-覆盖（暂不展开）：`osd::rpc_service_osd_Stub`、`connection::CallMethod()` 序列化与入队、`post_ring_write()` write ring 优化分支、`get_stub()` 的连接管理。
+覆盖（暂不展开）：`osd::rpc_service_osd_Stub`、`connection::CallMethod()` 序列化与入队、`post_ring_write()` write ring 优化分支、`get_stub()` 的连接管理。**完整文档：[route4.md](route4.md)**。
 
 ### 第五阶段：response / completion
 
 **目标**：搞懂写完成之后回调怎么一路返回上层。
 
-覆盖（暂不展开）：`on_response()`、`process_response()` 分发、`write_object_callback` → `write_source::write_done()` 聚合 → `invoke()` → `bdev_fastblock_write_callback()` → `spdk_bdev_io_complete()`、monclient 内部实现、OSD 端处理。
+覆盖（暂不展开）：`on_response()`、`process_response()` 分发、`write_object_callback` → `write_source::write_done()` 聚合 → `invoke()` → `bdev_fastblock_write_callback()` → `spdk_bdev_io_complete()`、monclient 内部实现、OSD 端处理。**完整文档：[route4.md](route4.md)**。
