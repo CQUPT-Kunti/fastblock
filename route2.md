@@ -312,4 +312,4 @@ handle_send_request → 查 leader cache (_leader_osd)
 - [ ] `on_leader_acquired()` 做了什么？（取出响应、写入 `_leader_osd` 缓存、校验有效性，无效则重发）
 - [ ] 第二阶段结束以后 Client 已经知道哪些信息？（PG10 → Leader OSD3 的 id、IP、端口）
 
-下一阶段入口：`process_request()`（[fb_client.h#L1063](src/include/fastblock/client/fb_client.h#L1063)）——请求队列和 poller 把缓存的 Leader 地址用起来，真正发数据。
+下一阶段入口：`process_request()`（[fb_client.h#L1063](src/include/fastblock/client/fb_client.h#L1063)）——请求队列和 poller 把缓存的 Leader 地址用起来，真正发数据。**完整文档：[route3.md](route3.md)**。

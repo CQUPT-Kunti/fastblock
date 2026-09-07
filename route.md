@@ -271,7 +271,7 @@ send_request()                                       [fb_client.h#L709](src/incl
 
 **目标**：搞懂 Client 的事件驱动骨架——请求从入队到发出由谁驱动。
 
-覆盖（暂不展开）：`_requests` / `_on_flight_requests` 队列、三个 poller（`fbcli_leader` / `fbcli_request` / `fbcli_response`）、`process_request()`、`should_retry_request()` / `retry_request()`、写失败后的重试路径。
+覆盖（暂不展开）：`_requests` / `_on_flight_requests` 队列、三个 poller（`fbcli_leader` / `fbcli_request` / `fbcli_response`）、`process_request()`、`should_retry_request()` / `retry_request()`、写失败后的重试路径。**完整文档：[route3.md](route3.md)**。
 
 ### 第四阶段：Data RPC / RDMA
 
