@@ -447,4 +447,4 @@ Completion（write_source 聚合 → invoke）
 spdk_bdev_io_complete() → 上层 IO 完成
 ```
 
-下一阶段：`src/osd/`（OSD 端如何接收这个 RPC、落盘、回复——那里有 Raft 和 LocalStore）。
+下一阶段：`src/osd/`（OSD 端如何接收这个 RPC、落盘、回复——那里有 Raft 和 LocalStore）。**完整文档：[route5.md](route5.md)**。
