@@ -399,4 +399,4 @@ PG/Raft 元数据：term / vote_for / node_cfg / lapply_idx   （raft.h:556-607�
 
 ## 下一阶段预告（暂不展开）
 
-`SPDK Blobstore → Blob → bdev → NVMe → SSD`：blob 分配与 xattr、IO 调度、NVMe 驱动、DMA。
+`SPDK Blobstore → Blob → bdev → NVMe → SSD`：blob 分配与 xattr、IO 调度、NVMe 驱动、DMA。**完整文档：[route7.md](route7.md)**。
