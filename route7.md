@@ -422,4 +422,4 @@ PCIe 提供的是**地址空间共享 + DMA 能力**：Controller 可以直接�
 
 ## 下一阶段预告（可选）
 
-如果要继续深入：SPDK 源码阅读（blobstore.c → bdev → nvme qpair/PRP）、DPDK hugepage 与内存管理、NVMe 协议细节。这些都需要引入 SPDK 外部源码树。
+如果要继续深入：SPDK 源码阅读（blobstore.c → bdev → nvme qpair/PRP）、DPDK hugepage 与内存管理、NVMe 协议细节。这些都需要引入 SPDK 外部源码树。**网络层完整文档：[route8.md](route8.md)**。
