@@ -474,6 +474,175 @@ Follower 端 [msg::rdma::server 分发](src/include/fastblock/msg/rdma/server.h#
 
 ---
 
+## 22. RDMA 内存 / Buffer / Memory Pool 专题（重点补充）
+
+> 目标：一次 4KB write 中，Client 和 OSD 两侧的数据分别住在哪块内存、谁申请、谁注册、谁发送/接收、什么时候回收。
+> **一句话答案先行**：FastBlock 是"**启动/建连时创建并注册 Memory Pool，请求到来时从 Pool 取 Buffer**"；唯一例外是 **Write Ring 路径**——Client 每次请求动态 `spdk_zmalloc + ibv_reg_mr`（见第 22.10 节结论）。
+
+### 22.1 Client 发送 4KB 数据：内存来源全追
+
+```text
+bdev iovs（SPDK bdev 的原始 buffer）
+↓ ① memcpy 成 std::string
+[libblk_client::write()](src/client/libfblock.cc#L97)（iov → data string）
+↓ ② 进入 protobuf
+[req->set_data(buf)](src/include/fastblock/client/fb_client.h#L1281)（write_request 自己持有这份数据的拷贝）
+↓ ③ 序列化进 DMA buffer
+[transport_data::serialize_data()](src/include/fastblock/msg/rdma/transport_data.h#L283)：request->SerializeToArray（L307）
+        ↓ 目标 = memory_pool 的 element（见下）
+↓ ④ SEND
+[::ibv_post_send](src/include/fastblock/msg/rdma/socket.h#L370)
+```
+
+**逐问回答**：
+
+- **上层 4KB 最初在哪**：SPDK bdev 的 iov buffer（[bdev_fastblock_write](src/bdev/bdev_fastblock.cc#L308) 的 `bdev_io->u.bdev.iovs`）。
+- **是否 memcpy**：是，且不止一次——① iov→std::string（libfblock.cc:97-110）；② string→protobuf bytes 字段（fb_client.h:1281，protobuf 内部再持有一份）；③ protobuf→DMA pool element（transport_data.h:307 `SerializeToArray`）。
+- **新 buffer 是什么**：①②是临时对象（std::string / protobuf 字段）；③的最终目标是 **`_data_pool` 的 element**——不是 malloc，不是每次新建。
+- **最终交给 RDMA 的 buffer 谁创建**：[msg::rdma::client 构造时](src/include/fastblock/msg/rdma/client.h#L1298) 创建 `_data_pool`（8KB element，预注册 MR）；请求到来时 [enqueue_request](src/include/fastblock/msg/rdma/client.h#L394) 创建 [transport_data](src/include/fastblock/msg/rdma/transport_data.h#L73)，由 [init()](src/include/fastblock/msg/rdma/transport_data.h#L677) 计算需要几块并从池里 [get()](src/include/fastblock/msg/rdma/transport_data.h#L598)。
+- **每次 RPC 动态申请吗**：**不**。元素从池借，用完由 [~transport_data()](src/include/fastblock/msg/rdma/transport_data.h#L103) 归还（put），池长期存活。
+
+### 22.2 FastBlock 的 RDMA Memory Pool
+
+**存在，且是核心结构**：[memory_pool<work_request_type>](src/include/fastblock/msg/rdma/memory_pool.h#L31)。
+
+| 问题 | 答案 | 证据 |
+|---|---|---|
+| 在哪创建 | `msg::rdma::client` 构造（Client 侧）、`msg::rdma::server` 构造（OSD 侧）、每连接一个 recv pool | [client.h#L1298-1305](src/include/fastblock/msg/rdma/client.h#L1298) / [server.h#L236-240](src/include/fastblock/msg/rdma/server.h#L236) / [server.h#L397-402](src/include/fastblock/msg/rdma/server.h#L397) |
+| 总共多大 | meta: 1024B×N；data: 8192B×N（N 默认 1024，配置可调） | [client.h#L61-64](src/include/fastblock/msg/rdma/client.h#L61) |
+| 每个 buffer 多大 | meta element 1024B，data element 8KB，recv element 1024B | 同上 |
+| 每核是否有自己的 pool | 是——每 shard 一个 `msg::rdma::client/server`（[connect_cache](src/include/fastblock/rpc/connect_cache.h#L28) 每 shard 建 client；osd.cc 每 shard 建 server） | [connect_cache.h#L28-39](src/include/fastblock/rpc/connect_cache.h#L28) |
+| Client 和 OSD 是否各有 pool | 是，各自独立一套 | client.h:1298 / server.h:236 |
+| Send/Receive 是否不同 pool | **是**：发送用 `_meta_pool/_data_pool`；接收用 `memory_pool<ibv_recv_wr>`（类型都不同） | [client.h#L496-500](src/include/fastblock/msg/rdma/client.h#L496) |
+| 用什么数据结构管理 | `std::list<net_context*>` freelist（get=pop_front / put=push_back） | [memory_pool.h#L119-131](src/include/fastblock/msg/rdma/memory_pool.h#L119) |
+
+### 22.3 MR 是一次注册还是每次注册？
+
+**启动时一次注册，请求复用，不重复 reg/dereg**：
+
+[memory_pool 构造](src/include/fastblock/msg/rdma/memory_pool.h#L45) 里对每个 element 各调一次 [ibv_reg_mr](src/include/fastblock/msg/rdma/memory_pool.h#L81)（`LOCAL_WRITE|REMOTE_WRITE|REMOTE_READ`），此后：
+
+- **MR 保存在哪**：element 的 `net_context.mr`（memory_pool.h:35），连同预填好的 `sge{lkey}` 一起
+- **每个 buffer 怎么知道自己的 lkey**：池构造时 `sge.lkey = mr->lkey` 已预填（[L95-97](src/include/fastblock/msg/rdma/memory_pool.h#L95)），SGE 出厂即武装
+- **rkey 从哪来**：数据块的 rkey 通过 **RPC metadata 里的 rm_info 表**传给对端（[transport_data.h#L606-613](src/include/fastblock/msg/rdma/transport_data.h#L606) 把 `_datas[i]->mr->addr/rkey` 填进 metadata）
+- **释放**：池整体销毁时 dereg（[memory_pool::free](src/include/fastblock/msg/rdma/memory_pool.h#L160)，client.h:1108-1109 / server.h:910-911）
+
+> 唯一例外：Write Ring 路径 Client 侧每请求 reg/dereg（见 22.6）。
+
+### 22.4 SGE 最终指向哪块内存？
+
+以 4KB write 为例（非 inline，因为 4KB > inline 上限 1008B，见 [max_inline_size](src/include/fastblock/msg/rdma/transport_data.h#L482) 与 [init() 的 inline 判断](src/include/fastblock/msg/rdma/transport_data.h#L677)）：
+
+- **addr**：指向 **memory_pool 的 element**（`_data_pool` 8KB 块），不是 Application buffer、不是 protobuf 内部 buffer——`SerializeToArray` 已经把请求体拷进去了（transport_data.h:307）
+- **length**：SEND 只发 **metadata WR**（[make_send_request 只用 _metas](src/include/fastblock/msg/rdma/transport_data.h#L425)，头 = [request_meta](src/include/fastblock/msg/rdma/types.h#L82) + rm_info 表）；**真正的 4KB payload 不随 SEND 走**，而是由对端用 metadata 里的 rm_info 通过 **RDMA READ 拉取**（[make_read_request](src/include/fastblock/msg/rdma/transport_data.h#L382)）
+- **lkey**：该 element 自己 MR 的 lkey（池预填）
+
+### 22.5 OSD 收数据：内存是谁提前准备的？
+
+**是"提前准备"的**，证据链：
+
+1. 连接建立时创建 recv pool：[server.h#L397-402](src/include/fastblock/msg/rdma/server.h#L397)（`srv_recv_*`，`memory_pool<ibv_recv_wr>`，512 个）
+2. 立即批量 [per_post_recv()](src/include/fastblock/msg/rdma/server.h#L327)：`get_bulk(512)` → 逐个 `sock->receive()`（= ibv_post_recv）——**数据来之前 RECV WR 已挂在 QP 上**（同样在 Client 侧，[client.h#L417-443](src/include/fastblock/msg/rdma/client.h#L417)）
+3. Client SEND → OSD RNIC 找到已 post 的 RECV WR → **DMA 直接写进 recv pool 的 element**
+4. 处理完该请求后 **重新 post**（[server.h#L618](src/include/fastblock/msg/rdma/server.h#L618) `post_recv`；Client 侧同款 [client.h#L962-968](src/include/fastblock/msg/rdma/client.h#L962)）
+5. buffer 真正归还 freelist 只在连接关闭时 `put_bulk`（[server.h#L303](src/include/fastblock/msg/rdma/server.h#L303)）——运行期靠"重新 post"循环复用
+
+### 22.6 普通 RPC vs Write Ring 内存路径
+
+**普通 RPC（4KB write 为例）**：
+
+- Client：pool element（`_data_pool`）← 序列化 ← protobuf ← std::string ← bdev iov（**3 次 CPU memcpy**）
+  → SEND(metadata + rm_info)
+- OSD：recv pool element 收 metadata → [request_data = transport_data(_data_pool)](src/include/fastblock/msg/rdma/server.h#L862) 从 **server 的 data_pool** 借块 → **RDMA READ 从 Client 的 pool element 拉 4KB** → [ParseFromArray 到新 protobuf](src/include/fastblock/msg/rdma/server.h#L616)（request_body）
+- buffer 来源：**全部来自各自 pool**；临时对象只有 std::string / protobuf 消息体
+
+**Write Ring**：
+
+- OSD 侧 slot：[create_write_ring](src/osd/osd_service.cc#L61) 时每 slot `spdk_zmalloc`（默认 16×256KB，一次性）+ [ibv_reg_mr(REMOTE_WRITE)](src/osd/osd_service.cc#L83)——**提前注册、租约制复用**，rkey 经 [process_acquire_write_ring](src/osd/osd_service.cc#L327) 告诉 Client
+- Client 侧：[post_ring_write](src/include/fastblock/client/fb_client.h#L496) **每次请求** `spdk_zmalloc(4KB 对齐) + ibv_reg_mr(LOCAL_WRITE)`（[L516-534](src/include/fastblock/client/fb_client.h#L516)）→ SerializeToArray（L524）→ RDMA WRITE 到 slot（remote addr/rkey，L560-561）→ 完成回调里 commit RPC（L571）→ [ring_write_context 析构](src/include/fastblock/client/fb_client.h#L87) dereg+free
+- OSD：commit 到达后 [ParseFromArray(slot.data)](src/osd/osd_service.cc#L437) → 正常写路径
+
+```text
+普通 RPC：Client pool element ──SEND(meta)──▶ OSD recv pool
+          Client pool element ◀──RDMA READ── OSD data_pool（拉 4KB payload）
+
+Write Ring：Client 临时 DMA buffer ──RDMA WRITE──▶ OSD slot.data（预注册）
+             Client ──commit RPC──▶ OSD（通知 slot N 就绪）
+```
+
+### 22.7 Client 与 OSD 两侧内存图
+
+```text
+Client
+────────────────────────────
+bdev iovs（SPDK bdev buffer，非注册）
+  ↓ memcpy
+std::string（libfblock.cc:97）
+  ↓ set_data
+protobuf write_request（fb_client.h:1281）
+  ↓ SerializeToArray
+_data_pool element（8KB，预注册 MR，transport_data.h:307）  ← 最终 SEND/RDMA 用的内存
+  ↓ SGE(addr=element, lkey=MR)
+WR → ibv_post_send → RNIC
+  归还：transport_data 析构 put()（transport_data.h:111）
+
+========= Network =========
+
+OSD
+────────────────────────────
+RNIC → 预 post 的 RECV WR
+  ↓ DMA
+recv pool element（1024B，预注册，server.h:397）
+  ↓ 解析 metadata → 查 service/method（server.h:556-581）
+_data_pool element（server 侧，8KB，RDMA READ 拉 payload，server.h:862）
+  ↓ ParseFromArray（server.h:616）
+新 protobuf request_body（GetRequestPrototype().New()，server.h:609）→ process_write()
+  归还：recv WR 重新 post（server.h:618）；request_data 析构归还 data_pool
+```
+
+### 22.8 4KB write 内存生命周期（14 步）
+
+1. **4KB 最初在哪**：bdev iovs（[bdev_fastblock_write](src/bdev/bdev_fastblock.cc#L308)）
+2. **Client memcpy ①**：iov → `std::string`（[libfblock.cc#L97-110](src/client/libfblock.cc#L97)）
+3. **Client memcpy ②**：→ `write_request.data`（[fb_client.h#L1281](src/include/fastblock/client/fb_client.h#L1281)）
+4. **RDMA Send Buffer 从哪来**：`_data_pool->get()`（[transport_data.h#L598](src/include/fastblock/msg/rdma/transport_data.h#L598)，池创建于 [client.h#L1302](src/include/fastblock/msg/rdma/client.h#L1302)）
+5. **MR 已注册**：池构造时（[memory_pool.h#L81](src/include/fastblock/msg/rdma/memory_pool.h#L81)），无需每次注册
+6. **形成 SGE**：池预填（[memory_pool.h#L95-97](src/include/fastblock/msg/rdma/memory_pool.h#L95)）+ [make_send_request](src/include/fastblock/msg/rdma/transport_data.h#L425)
+7. **形成 WR**：同上（IBV_WR_SEND 链）
+8. **RNIC 读 Client 内存**：[ibv_post_send](src/include/fastblock/msg/rdma/socket.h#L370)（SEND 只发 metadata；4KB 由对端 READ）
+9. **OSD 数据写进哪**：先 recv pool（metadata，[server.h#L397-402](src/include/fastblock/msg/rdma/server.h#L397)）；payload 由 OSD **RDMA READ** 拉进 server `_data_pool` element（[server.h#L862](src/include/fastblock/msg/rdma/server.h#L862)）
+10. **OSD Receive Buffer 从哪来**：连接建立时预建 recv pool + 批量 post_recv（[server.h#L327-353](src/include/fastblock/msg/rdma/server.h#L327)）
+11. **Receive completion 处理**：CQ → [server 分发](src/include/fastblock/msg/rdma/server.h#L556) → 查 service/method
+12. **protobuf 得到 write_request**：[GetRequestPrototype(method).New()](src/include/fastblock/msg/rdma/server.h#L609) + [ParseFromArray](src/include/fastblock/msg/rdma/server.h#L616)——**新对象，从 pool buffer 拷进 protobuf 自有内存**
+13. **data 是否再次 copy**：是——ParseFromArray 时 protobuf 内部持有 4KB 拷贝（request_body 生命周期归任务，任务结束 delete）
+14. **何时释放**：recv WR 处理完立即重 post（[server.h#L618](src/include/fastblock/msg/rdma/server.h#L618)）；request_data 析构归还 server data_pool；Client 侧 transport_data 析构归还 client `_data_pool`（[transport_data.h#L103-112](src/include/fastblock/msg/rdma/transport_data.h#L103)）
+
+### 22.9 Buffer 生命周期表
+
+| Buffer | 谁创建 | 创建时间 | 是否 MR | 用途 | 什么时候释放/归还 |
+|---|---|---|---|---|---|
+| Application Buffer（bdev iovs） | SPDK bdev 模块 | IO 到达时 | 否 | 上层数据源 | bdev_io_complete 后 |
+| std::string（libfblock.cc:97） | `libblk_client::write` | 每次 write | 否 | 拼装 iov | 函数返回后（临时对象） |
+| protobuf `write_request` | `write_object`（fb_client.h:1276） | 每次 write | 否 | 请求消息体 | 请求栈帧释放时 |
+| RDMA Send Buffer（pool element） | `msg::rdma::client`（client.h:1302） | **启动时** | **是（一次）** | 序列化+RDMA 发送 | transport_data 析构 put()（transport_data.h:111） |
+| RDMA Receive Buffer（recv pool element） | `client/server` 建连时（client.h:496 / server.h:397） | **建连时** | **是（一次）** | RNIC DMA 落点 | 重 post 循环复用；关连接 put_bulk（server.h:303） |
+| Write Ring Buffer（Client 侧） | `post_ring_write`（fb_client.h:517） | **每次请求** | **是（每次）** | RDMA WRITE 数据源 | [ring ctx 析构 dereg+free](src/include/fastblock/client/fb_client.h#L87) |
+| Write Ring slot（OSD 侧） | `create_write_ring`（osd_service.cc:61） | **acquire 时一次性** | **是（一次）** | 远端 RDMA WRITE 落点 | [slot 析构 dereg+free](src/osd/osd_service.cc#L52) + 租约过期清理 |
+
+### 22.10 特别回答：动态分配还是 Memory Pool？
+
+```text
+Client 普通 RPC：Memory Pool（_data_pool/_meta_pool，启动时创建+注册，请求取/还）
+OSD 普通 Receive：Memory Pool（recv_pool 建连时创建+注册+批量 post_recv；大 payload
+                 用 server data_pool + RDMA READ 拉取）
+Client Write Ring：动态分配（每次请求 spdk_zmalloc + ibv_reg_mr，用完 dereg+free）
+OSD Write Ring：预分配（acquire 时一次性 16×256KB 注册，租约制复用，过期释放）
+```
+
+**总结论**：热路径主体是"**启动/建连时创建并注册 Pool，请求到来从 Pool 取 Buffer**"；只有 Client 的 Write Ring 发送 buffer 是唯一"每次请求动态 malloc + 注册"的地方。两条路径的 buffer 全部独立（详见第 22.9 表），不存在跨路径共享。
+
+---
+
 ## 下一阶段（可选）
 
 深入 `msg/rdma` 剩余部分：provider（verbs/mlx5dv 差异）、pd/device 管理、连接事件（rdma_cm）、写 ring 完整实现；或进入 OSD 内部 Raft 与存储的衔接。
