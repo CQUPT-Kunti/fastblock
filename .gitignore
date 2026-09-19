@@ -4,6 +4,7 @@ build
 *.pb.cc
 *.pb.h
 *.pb.go
+*.zip
 tmp
 build.rel
 build.reldbg
@@ -17,6 +18,8 @@ fastblock.json
 .cache/
 core.*
 src/test/file/
+specs
+.specify
 
 # Compiled object files and libraries
 *.o
