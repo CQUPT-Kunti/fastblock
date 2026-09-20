@@ -64,6 +64,9 @@ private:
     delete_callback
     >;
 
+    using ring_write_pool_type = msg::rdma::memory_pool<::ibv_send_wr>;
+    using ring_write_net_context = ring_write_pool_type::net_context;
+
     struct leader_request_stack_type {
         osd::rpc_service_osd_Stub* stub{nullptr};
         std::unique_ptr<msg::rdma::rpc_controller> ctrlr{std::make_unique<msg::rdma::rpc_controller>()};
@@ -81,16 +84,18 @@ private:
             std::shared_ptr<write_ring_state> ring_state{nullptr};
             std::unique_ptr<osd::commit_ring_write_request> commit_req{nullptr};
             uint32_t slot_index{0};
-            void* data{nullptr};
-            ::ibv_mr* mr{nullptr};
+            std::shared_ptr<ring_write_pool_type> local_pool{nullptr};
+            ring_write_net_context* local_ctx{nullptr};
+
+            void release_local_buffer() noexcept {
+                if (local_pool && local_ctx) {
+                    local_pool->put(local_ctx);
+                    local_ctx = nullptr;
+                }
+            }
 
             ~ring_write_context() noexcept {
-                if (mr) {
-                    ::ibv_dereg_mr(mr);
-                }
-                if (data) {
-                    ::spdk_free(data);
-                }
+                release_local_buffer();
             }
         };
 
@@ -513,45 +518,43 @@ private:
             return false;
         }
 
-        auto alloc_size = utils::align_up<uint64_t>(serialized_size, 4096);
-        auto* data = ::spdk_zmalloc(
-          alloc_size, 0x1000, nullptr, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
-        if (!data) {
+        auto ring_write_pool = ring_state->conn->ring_write_pool();
+        if (!ring_write_pool) {
             remote_slot.busy = false;
             return false;
         }
 
-        if (!write_req->SerializeToArray(data, serialized_size)) {
+        if (serialized_size > ring_write_pool->element_size()) {
             remote_slot.busy = false;
-            ::spdk_free(data);
             return false;
         }
 
-        auto* mr = ::ibv_reg_mr(
-          ring_state->conn->fd().pd(),
-          data,
-          alloc_size,
-          IBV_ACCESS_LOCAL_WRITE);
-        if (!mr) {
+        auto* local_ctx = ring_write_pool->get();
+        if (!local_ctx) {
             remote_slot.busy = false;
-            ::spdk_free(data);
+            return false;
+        }
+
+        if (!write_req->SerializeToArray(local_ctx->mr->addr, serialized_size)) {
+            ring_write_pool->put(local_ctx);
+            remote_slot.busy = false;
             return false;
         }
 
         auto ring_ctx = std::make_unique<request_stack_type::ring_write_context>();
         ring_ctx->ring_state = ring_state;
         ring_ctx->slot_index = *slot_idx;
-        ring_ctx->data = data;
-        ring_ctx->mr = mr;
+        ring_ctx->local_pool = ring_write_pool;
+        ring_ctx->local_ctx = local_ctx;
         ring_ctx->commit_req = std::make_unique<osd::commit_ring_write_request>();
         ring_ctx->commit_req->set_queue_id(ring_state->queue_id);
         ring_ctx->commit_req->set_slot_index(*slot_idx);
         ring_ctx->commit_req->set_serialized_size(static_cast<uint32_t>(serialized_size));
 
         ::ibv_sge sge{};
-        sge.addr = reinterpret_cast<uint64_t>(mr->addr);
+        sge.addr = reinterpret_cast<uint64_t>(local_ctx->mr->addr);
         sge.length = static_cast<uint32_t>(serialized_size);
-        sge.lkey = mr->lkey;
+        sge.lkey = local_ctx->mr->lkey;
 
         ::ibv_send_wr wr{};
         wr.opcode = IBV_WR_RDMA_WRITE;
@@ -567,6 +570,8 @@ private:
         auto err = ring_state->conn->post_external_send_wr(
           &wr,
           [this, stack_ptr]() {
+              stack_ptr->ring_ctx->release_local_buffer();
+
               auto& reply_ref = std::get<std::unique_ptr<osd::write_reply>>(stack_ptr->resp);
               stack_ptr->stub->process_commit_ring_write(
                 stack_ptr->ctrlr.get(),
