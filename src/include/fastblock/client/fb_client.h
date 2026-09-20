@@ -898,7 +898,8 @@ public:
                     },
 
                     [this, req_stk] (read_object_callback &cb) {
-                        cb(req_stk->ctx, req_stk->obj_index, std::string{}, err::ERR_NOT_FOUND_POOL);
+                        static const std::string empty_data;
+                        cb(req_stk->ctx, req_stk->obj_index, empty_data, err::ERR_NOT_FOUND_POOL);
                     },
 
                     [this, req_stk] (delete_callback &cb) {
@@ -981,18 +982,22 @@ public:
             [this, stack_ptr = head] (std::unique_ptr<osd::read_reply>& resp) {
                 auto& req = std::get<std::unique_ptr<osd::read_request>>(stack_ptr->req);
                 auto state = stack_ptr->ctrlr->Failed() ? -ENOLINK : resp->state();
-                auto data = stack_ptr->ctrlr->Failed() ? std::string{} : resp->data();
                 SPDK_INFOLOG(
                  libblk,
                    "read_object pool: %lu pg:%lu object:%s offset:%lu done. state:%d data size: %lu\n",
                    req->pool_id(), req->pg_id(), req->object_name().c_str(),
-                   req->offset(), state, data.size());
+                   req->offset(), state, stack_ptr->ctrlr->Failed() ? 0 : resp->data().size());
 
                 if (should_retry_request(state)) {
                     return std::optional<int32_t>{state};
                 }
                 auto cb = std::get<read_object_callback>(stack_ptr->resp_cb);
-                cb(stack_ptr->ctx, stack_ptr->obj_index, data, state);
+                if (stack_ptr->ctrlr->Failed()) {
+                    static const std::string empty_data;
+                    cb(stack_ptr->ctx, stack_ptr->obj_index, empty_data, state);
+                } else {
+                    cb(stack_ptr->ctx, stack_ptr->obj_index, resp->data(), state);
+                }
                 return std::optional<int32_t>{};
             },
 
@@ -1107,7 +1112,8 @@ public:
                     },
 
                     [this, stack_ptr = head.get()] (read_object_callback &cb) {
-                        cb(stack_ptr->ctx, stack_ptr->obj_index, std::string{}, err::ERR_NOT_FOUND_POOL);
+                        static const std::string empty_data;
+                        cb(stack_ptr->ctx, stack_ptr->obj_index, empty_data, err::ERR_NOT_FOUND_POOL);
                     },
 
                     [this, stack_ptr = head.get()] (delete_callback &cb) {
@@ -1267,24 +1273,25 @@ public:
     int write_object(
       std::string object_name,
       uint64_t offset,
-      const std::string &buf,
+      std::string buf,
       int32_t target_pool_id,
       write_object_callback cb_fn,
       void *source) {
         auto target_pg = calc_target(object_name, target_pool_id);
 
         auto req = std::make_unique<osd::write_request>();
+        auto buf_size = buf.size();
         req->set_pool_id(target_pool_id);
         req->set_pg_id(target_pg);
         req->set_object_name(object_name);
         req->set_offset(offset);
-        req->set_data(buf);
+        req->set_data(std::move(buf));
         send_request(target_pool_id, target_pg, std::move(req), cb_fn, source);
 
         SPDK_INFOLOG(
           libblk,
           "write_object pool: %u pg: %u object_name: %s offset: %lu length: %lu \n",
-          target_pool_id, target_pg, object_name.c_str(), offset, buf.size());
+          target_pool_id, target_pg, object_name.c_str(), offset, buf_size);
 
         return 0;
     }

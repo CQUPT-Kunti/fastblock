@@ -12,6 +12,7 @@
 #include "fastblock/client/libfblock.h"
 #include <spdk/bdev_module.h>
 #include <thread>
+#include <utility>
 
 #include "fastblock/bdev/global.h"
 #include "fastblock/utils/utils.h"
@@ -201,7 +202,7 @@ int libblk_client::write(const uint64_t pool_id, const std::string image_name, c
         // 写一个对象
         std::string str = std::string(buf.c_str() + write_bytes, expected_object_size);
         // 计算对象目标pg
-        _client->write_object(object_name, object_offset, str, pool_id, &write_source::write_done, source);
+        _client->write_object(object_name, object_offset, std::move(str), pool_id, &write_source::write_done, source);
         write_bytes += expected_object_size;
         expected_object_size = default_object_size; // 默认的对象大小
         if (expected_object_size > (length - write_bytes))
