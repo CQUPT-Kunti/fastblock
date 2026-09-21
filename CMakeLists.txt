@@ -22,6 +22,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_UNITY_BUILD_BATCH_SIZE 10)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+option(FASTBLOCK_ENABLE_SANITIZERS "Build FastBlock dependencies with sanitizers" OFF)
 
 if (DEPS_INSTALL_DIR)
   set(FASTBLOCK_DEPS_INSTALL_DIR ${DEPS_INSTALL_DIR} CACHE STRING "Managed dependencies install directory")
@@ -62,15 +63,18 @@ list(APPEND BASE_CXX_FLAGS_LIST -fPIC)
 list(APPEND BASE_C_FLAGS_LIST -fPIC)
 
 if ("${CMAKE_BUILD_TYPE}" MATCHES "Debug")
-  set(COMMON_LINKOPTS "-lasan")
   add_compile_definitions(DEBUG)
-
-  list(APPEND BASE_CXX_FLAGS_LIST
-    -fsanitize=address)
-  list(APPEND BASE_C_FLAGS_LIST
-    -fsanitize=address)
-  list(APPEND BASE_LD_FLAGS_LIST
-    -fsanitize=address)
+  if (FASTBLOCK_ENABLE_SANITIZERS)
+    set(COMMON_LINKOPTS "-lasan")
+    list(APPEND BASE_CXX_FLAGS_LIST
+      -fsanitize=address)
+    list(APPEND BASE_C_FLAGS_LIST
+      -fsanitize=address)
+    list(APPEND BASE_LD_FLAGS_LIST
+      -fsanitize=address)
+  else()
+    set(COMMON_LINKOPTS)
+  endif()
 else()
   set(COMMON_LINKOPTS)
 endif()

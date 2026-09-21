@@ -64,7 +64,7 @@ private:
     delete_callback
     >;
 
-    using ring_write_pool_type = msg::rdma::memory_pool<::ibv_send_wr>;
+    using ring_write_pool_type = msg::rdma::ring_write_pool;
     using ring_write_net_context = ring_write_pool_type::net_context;
 
     struct leader_request_stack_type {

@@ -71,10 +71,14 @@ set(build_env
 
 if (@CMAKE_BUILD_TYPE@ MATCHES "Debug")
   set(spdk_debug "--enable-debug")
+else()
+  set(spdk_debug "")
+endif()
+
+if (@FASTBLOCK_ENABLE_SANITIZERS@)
   set(spdk_asan "--enable-asan")
   set(spdk_ubsan "--enable-ubsan")
 else()
-  set(spdk_debug "")
   set(spdk_asan "")
   set(spdk_ubsan "")
 endif()
