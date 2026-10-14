@@ -161,6 +161,9 @@ private:
 
     static constexpr uint64_t sample_window{1024};
     static constexpr uint32_t grow_windows{3};
+    static constexpr uint32_t grow_fail_percent{10};
+    static constexpr size_t grow_step{128};
+    static constexpr uint32_t shrink_usage_percent{30};
     static constexpr auto shrink_duration = std::chrono::seconds{30};
 
     static int shrink_poller(void* arg) {
@@ -204,7 +207,7 @@ private:
             return;
         }
 
-        if (_window_get_fail_count > 0) {
+        if (_window_get_fail_count * 100 >= sample_window * grow_fail_percent) {
             ++_fail_windows;
         } else {
             _fail_windows = 0;
@@ -234,7 +237,7 @@ private:
         }
 
         auto old_capacity = _capacity;
-        auto target = std::min(_capacity * 2, _max_capacity);
+        auto target = std::min(_capacity + grow_step, _max_capacity);
         try {
             add_chunk(target - _capacity);
         } catch (const std::exception& e) {
@@ -264,7 +267,7 @@ private:
         }
 
         auto now = std::chrono::steady_clock::now();
-        if (_capacity > 0 && _in_use * 100 <= _capacity * 25) {
+        if (_capacity > 0 && _in_use * 100 <= _capacity * shrink_usage_percent) {
             if (!_low_usage_since.has_value()) {
                 _low_usage_since = now;
                 return;

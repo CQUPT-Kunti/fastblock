@@ -1294,7 +1294,7 @@ public:
 
     client() = delete;
 
-    static constexpr size_t ring_write_pool_min_capacity{32};
+    static constexpr size_t ring_write_pool_min_capacity{128};
     static constexpr size_t ring_write_pool_max_capacity{512};
     static constexpr size_t ring_write_pool_element_size{256 * 1024};
 
